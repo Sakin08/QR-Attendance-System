@@ -14,8 +14,26 @@ const studentRoutes = require("./routes/studentRoutes");
 
 const app = express();
 
-// Connect to MongoDB
-connectDB();
+// Connect to MongoDB (handle connection in serverless environment)
+let isConnected = false;
+
+const ensureDbConnection = async () => {
+  if (!isConnected) {
+    try {
+      await connectDB();
+      isConnected = true;
+    } catch (error) {
+      console.error("Failed to connect to database:", error);
+      // Don't crash the function, let it handle the error gracefully
+    }
+  }
+};
+
+// Middleware to ensure DB connection on each request
+app.use(async (req, res, next) => {
+  await ensureDbConnection();
+  next();
+});
 
 // Security middleware
 app.use(
@@ -53,7 +71,7 @@ app.use(generateDeviceFingerprint);
 // Rate limiting
 app.use(generalLimiter);
 
-// Health check endpoint
+// Health check endpoint (no DB required)
 app.get("/health", (req, res) => {
   res.status(200).json({
     success: true,
@@ -61,6 +79,24 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
   });
+});
+
+// Database health check
+app.get("/health/db", async (req, res) => {
+  try {
+    await ensureDbConnection();
+    res.status(200).json({
+      success: true,
+      message: "Database connection is healthy",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      message: "Database connection failed",
+      error: error.message,
+    });
+  }
 });
 
 // Test endpoint
@@ -117,6 +153,14 @@ app.use((error, req, res, next) => {
     return res.status(401).json({
       success: false,
       message: "Token expired",
+    });
+  }
+
+  // Database connection errors
+  if (error.name === "MongooseError" || error.name === "MongoError") {
+    return res.status(503).json({
+      success: false,
+      message: "Database connection error",
     });
   }
 
